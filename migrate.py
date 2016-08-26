@@ -19,8 +19,14 @@
 
 
 import argparse
-import urllib2
 import getpass
+from requests.auth import HTTPBasicAuth
+import requests
+import sys
+
+reload(sys)
+sys.setdefaultencoding('utf8')
+
 
 from pygithub3 import Github
 
@@ -41,12 +47,12 @@ def read_arguments():
 
     parser.add_argument(
         "bitbucket_username",
-        help="Your Bitbucket username"
+        help="Your Bitbucket username. (Ex: super_hacker)"
     )
 
     parser.add_argument(
         "bitbucket_repo",
-        help="Bitbucket repository to pull data from."
+        help="Bitbucket repository to pull data from. Format <username>/<repo name>"
     )
 
     parser.add_argument(
@@ -146,7 +152,7 @@ def clean_body(body):
 
 
 # Bitbucket fetch
-def get_issues(bb_url, start_id):
+def get_issues(bb_url, start_id, bb_username, bb_password):
     '''
     Fetch the issues from Bitbucket
     '''
@@ -157,18 +163,12 @@ def get_issues(bb_url, start_id):
             bb_url,
             start_id
         )
-
         try:
-            response = urllib2.urlopen(url)
-        except urllib2.HTTPError as ex:
-            ex.message = (
-                'Problem trying to connect to bitbucket ({url}): {ex} '
-                'Hint: the bitbucket repository name is case-sensitive.'
-                .format(url=url, ex=ex)
-            )
+            r = requests.get(url, auth=HTTPBasicAuth(bb_username, bb_password))
+        except:
             raise
         else:
-            result = json.loads(response.read())
+            result = r.json()
             if not result['issues']:
                 # Check to see if there is issues to process if not break out.
                 break
@@ -179,7 +179,7 @@ def get_issues(bb_url, start_id):
     return issues
 
 
-def get_comments(bb_url, issue):
+def get_comments(bb_url, issue, bb_username, bb_password):
     '''
     Fetch the comments for a Bitbucket issue
     '''
@@ -187,7 +187,8 @@ def get_comments(bb_url, issue):
         bb_url,
         issue['local_id']
     )
-    result = json.loads(urllib2.urlopen(url).read())
+    r = requests.get(url, auth=HTTPBasicAuth(bb_username, bb_password))
+    result = r.json()
     ordered = sorted(result, key=lambda comment: comment["utc_created_on"])
 
     comments = []
@@ -275,23 +276,26 @@ def push_issue(gh_username, gh_repository, issue, body, comments):
 
 if __name__ == "__main__":
     options = read_arguments()
+    bb_repo_username, bb_repository = options.bitbucket_repo.split('/')
     bb_url = "https://api.bitbucket.org/1.0/repositories/{}/{}/issues".format(
-        options.bitbucket_username,
-        options.bitbucket_repo
+        bb_repo_username,
+        bb_repository
     )
 
+    bb_password = getpass.getpass(">>>Please enter your Bitbucket password\n")
+    github_password = getpass.getpass(">>>Please enter your GitHub password\n")
+
     # fetch issues from Bitbucket
-    issues = get_issues(bb_url, options.start)
+    issues = get_issues(bb_url, options.start, options.bitbucket_username, bb_password)
 
     # push them in GitHub (issues comments are fetched here)
-    github_password = getpass.getpass("Please enter your GitHub password\n")
     github = Github(login=options.github_username, password=github_password)
     gh_username, gh_repository = options.github_repo.split('/')
 
     # Sort issues, to sync issue numbers on freshly created GitHub projects.
     # Note: not memory efficient, could use too much memory on large projects.
     for issue in sorted(issues, key=lambda issue: issue['local_id']):
-        comments = get_comments(bb_url, issue)
+        comments = get_comments(bb_url, issue, options.bitbucket_username, bb_password)
 
         if options.dry_run:
             print "Title: {}".format(issue.get('title').encode('utf-8'))
